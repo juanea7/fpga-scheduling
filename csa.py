@@ -15,7 +15,7 @@ import seaborn as sns
 from matplotlib import gridspec
 
 
-class CrowScheduler:
+class CrowSearchAlgorithm:
     def __init__(self, num_kernels, num_slots, obj_func, kernel_names=None):
         """
         Initialize the Crow Scheduler.
@@ -224,7 +224,7 @@ if __name__ == "__main__":
 
     num_kernels = 11
     num_slots = 8
-    scheduler = CrowScheduler(num_kernels, num_slots, penalized_model, kernel_names=list("ABCDEFGHIJK"))
+    scheduler = CrowSearchAlgorithm(num_kernels, num_slots, penalized_model, kernel_names=list("ABCDEFGHIJK"))
     scheduler.run(n_crows=40, max_iter=100, awareness_prob=0.4, flight_length=1.5)
 
     print("Best Kernel Counts:", scheduler.best_position)
