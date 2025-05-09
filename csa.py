@@ -14,6 +14,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import seaborn as sns
 from matplotlib import gridspec
+from functools import lru_cache
+from frozendict import frozendict
 
 from incremental_learning import online_models as om
 
@@ -43,6 +45,8 @@ class CrowSearchAlgorithm:
 
         self.obj_func = self.model_optimization_function if obj_func is None else obj_func
         self.models = models
+        # Cached predictor
+        self._cached_predict = self._build_cached_predictor()
 
     def normalize_to_slot_sum(self, kernel_counts, max_slots):
         """
@@ -544,6 +548,36 @@ class CrowSearchAlgorithm:
 
         return self.best_position
 
+    def _build_cached_predictor(self):
+        """
+        Build a cached predictor for the last model in the list of models.
+        This function is used to create a cached predictor as a closure without hashing the models.
+        """
+
+        # Capture the model in the closure
+        model = self.models[-1]
+
+        # Define the cached prediction function
+        @lru_cache(maxsize=100000)
+        def predict(frozen_features):
+            """
+            Cache the predicted time for a given set of features.
+            This function is used to avoid recomputing predictions for the same input.
+            """
+            return round(model.predict_one(dict(frozen_features)), 3)
+
+        return predict
+
+    def predict_time(self, features):
+        """
+        Predict the execution time using the cached predictor.
+        """
+        # Check if the cached predictor is built
+        frozen = frozendict(features)
+
+        # Call the cached predictor with the frozen features
+        return self._cached_predict(frozen)
+
     def model_optimization_function(self, running_kernels: np.ndarray, schedulable_candidate: np.ndarray, cpu_usage: dict = None):
         """
         TODO
@@ -584,7 +618,8 @@ class CrowSearchAlgorithm:
             # print(f"Feature: {feature}")
 
             # Predict execution time of each kernel in the running queue (without schedulable kernels)
-            actual_configuration_predicted_time = round(self.models[-1].predict_one(feature), 3)
+            # actual_configuration_predicted_time = round(self.models[-1].predict_one(feature), 3)
+            actual_configuration_predicted_time = self.predict_time(feature)
             # print(f"Actual Configuration Predicted Time: {actual_configuration_predicted_time}")
 
             # Create schedulable candidate feature
@@ -593,7 +628,8 @@ class CrowSearchAlgorithm:
             # print(f"Feature: {feature}")
 
             # Predict execution time of each kernel in the running queue (with schedulable kernels)
-            candidate_configuration_predicted_time = round(self.models[-1].predict_one(feature), 3)
+            # candidate_configuration_predicted_time = round(self.models[-1].predict_one(feature), 3)
+            candidate_configuration_predicted_time = self.predict_time(feature)
             # print(f"Candidate Configuration Predicted Time: {candidate_configuration_predicted_time}")
 
             # Compute the relative difference in execution time of each kernel in the running queue
@@ -621,7 +657,8 @@ class CrowSearchAlgorithm:
             # print(f"Feature: {feature}")
 
             # Predict execution time of each kernel in the schedulable set (when alone)
-            alone_predicted_time = round(self.models[-1].predict_one(feature), 3)
+            # alone_predicted_time = round(self.models[-1].predict_one(feature), 3)
+            alone_predicted_time = self.predict_time(feature)
             # print(f"Alone Predicted Time: {alone_predicted_time}")
 
             # Create schedulable candidate feature
@@ -630,7 +667,8 @@ class CrowSearchAlgorithm:
             # print(f"Feature: {feature}")
 
             # Predict execution time of each kernel in the schedulable set (when in the candidate configuration)
-            candidate_configuration_predicted_time = round(self.models[-1].predict_one(feature), 3)
+            # candidate_configuration_predicted_time = round(self.models[-1].predict_one(feature), 3)
+            candidate_configuration_predicted_time = self.predict_time(feature)
             # print(f"Candidate Configuration Predicted Time: {candidate_configuration_predicted_time}")
 
             # Compute the relative difference in execution time of each kernel in the schedulable set
@@ -642,36 +680,33 @@ class CrowSearchAlgorithm:
             # Accumulate the interaction of each kernel in the running queue
             interaction_on_schedulable_kernels.append(relative_difference)
 
-
-        #
-        # Fairness (promote diversity, otherwise fast kernels will always be used)
-        #
-
-        # TODO
-
-        #
-        # Promote parallelism (with the above division?)
-        #
-
-        # TODO
-
-        #
-        # Penalize empty slots (maximize resource utilization)
-        #
-
+        # Calculate partial fitness values
         running_kernel_fitness = np.mean(interaction_on_running_kernels) if len(interaction_on_running_kernels) > 0 else 0
         schedulable_kernel_fitness = np.mean(interaction_on_schedulable_kernels) if len(interaction_on_schedulable_kernels) > 0 else 0
         gain_fitness = np.mean(gain) if len(gain) > 0 else 0
-        balance_penalty = np.std(schedulable_kernels)
+        fairness_penarlty = np.std(schedulable_kernels)
 
-        fitness = 2 * np.mean(running_kernel_fitness) + 2 * np.mean(schedulable_kernel_fitness) - 1 * np.mean(gain_fitness) + 0.5 * balance_penalty
+        # Normalize the fitness values
+        running_kernel_norm = np.clip(running_kernel_fitness, 0, 1.0) # / 1.0
+        schedulable_kernel_norm = np.clip(schedulable_kernel_fitness, 0, 2.0) / 2.0
+        gain_norm = np.clip(gain_fitness, 0, 0.5) / 0.5
+        fairness_penarlty_norm = np.clip(fairness_penarlty, 0, 2.3) / 2.3
 
+        # Calculate penalties
+        interaction_penalty = running_kernel_norm + schedulable_kernel_norm - 0.5 * gain_norm
+
+        alpha = 1
+
+        # TODO: might make sense to make both penalties to have the same range
+        fitness = alpha * interaction_penalty + (1 - alpha) * fairness_penarlty_norm
 
         # print(f"Schedule Candidate: {schedulable_candidate}")
-        # print(f"Running Interaction: {running_kernel_fitness}")
-        # print(f"Schedulable Interaction: {schedulable_kernel_fitness}")
-        # print(f"Gain: {gain_fitness}")
-        # print(f"Balance Penalty: {balance_penalty}")
+        # print(f"Running Interaction: {running_kernel_norm}")
+        # print(f"Schedulable Interaction: {schedulable_kernel_norm}")
+        # print(f"Gain: {gain_norm}")
+        # print(f"Interaction Penalty: {interaction_penalty}")
+        # print(f"Balance Penalty: {fairness_penarlty_norm}")
+        # print(f"Alpha: {alpha}")
         # print(f"Fitness: {fitness}")
 
         return fitness
@@ -740,6 +775,19 @@ class CrowSearchAlgorithm:
 
         # plt.tight_layout()
         plt.show()
+
+    def get_best_iteration_data(self):
+        """
+        Get the best iteration data for the best crow.
+        """
+
+        if self.history_positions is None or self.history_fitness is None:
+            raise ValueError("No history found. Run the algorithm first.")
+
+        # Get the best iteration index
+        best_iter_idx = int(np.argmin(self.history_fitness[:, self.best_crow_idx]))
+
+        return self.best_crow_idx, best_iter_idx
 
 # === Example usage ===
 def power_performance_model(kernel_counts):
@@ -816,14 +864,16 @@ if __name__ == "__main__":
 
     running_kernels = np.zeros(num_kernels, dtype=int)
     running_kernels[[1,4]] = 1
-    schedulable_kernels=[5,6,10]
+    schedulable_kernels=[5,7,8,9,10]
+
     for i in range(2):
-        print(scheduler.run_standalone(n_crows=40, max_iter=150, awareness_prob=0.4, flight_length=5.5,
-                    running_kernels=running_kernels,
-                    schedulable_kernels=schedulable_kernels,
-                    cpu_usage={"user":40, "kernel":20, "idle":40}))
+        scheduler.run_standalone(n_crows=20, max_iter=100, awareness_prob=0.2, flight_length=1.5,
+                                running_kernels=running_kernels,
+                                schedulable_kernels=schedulable_kernels,
+                                cpu_usage={"user":40, "kernel":20, "idle":40})
         scheduler.plot_crow(running_kernels=running_kernels, schedulable_kernels=schedulable_kernels, crow_id=scheduler.best_crow_idx)
 
         print("Best Kernel Counts:", scheduler.best_position)
         print("Best Score:", scheduler.best_score)
         print("Best Crow:", scheduler.best_crow_idx)
+        print("Best Iteration Data: (crow_idx, iteration)", scheduler.get_best_iteration_data())
