@@ -609,6 +609,7 @@ class CrowSearchAlgorithm:
         # print(f"Schedulable Configuration: {schedulable_configuration}")
 
         interaction_on_running_kernels = []
+        """
         for kernel_idx in running_kernels.nonzero()[0]:
 
             # Create running queue feature
@@ -637,6 +638,7 @@ class CrowSearchAlgorithm:
 
             # Accumulate the interaction of each kernel in the running queue
             interaction_on_running_kernels.append(relative_difference)
+        """
 
 
         #
