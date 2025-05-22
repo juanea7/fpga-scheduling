@@ -11,9 +11,6 @@ Description : This file contains the implementation of the Crow Search Algorithm
 
 import pickle
 import numpy as np
-import matplotlib.pyplot as plt
-import seaborn as sns
-from matplotlib import gridspec
 from functools import lru_cache
 from frozendict import frozendict
 
@@ -65,6 +62,42 @@ class CrowSearchAlgorithm:
             idx = np.argmin(kernel_counts)
             kernel_counts[idx] += 1
             total += 1
+        return kernel_counts.astype(int)
+
+    def convert_to_power_of_two(self, kernel_counts):
+        """
+        Convert kernel counts to the nearest power of two.
+        """
+        # Get the powers of two
+        # powers_of_two = [0] + [2 ** i for i in range(int(np.log2(self.num_slots)) + 1)]
+        powers_of_two = [0,2,4,8]
+
+        # Find the nearest power of two for each kernel count
+        # The min func uses the lambda to find the closest power of two
+        nearest_powers_of_two = [min(powers_of_two, key=lambda x: abs(x - count)) for count in kernel_counts]
+
+        return np.array(nearest_powers_of_two)
+
+
+    def normalize_to_power_of_two(self, kernel_counts, max_slots):
+        """
+        Normalize a kernel count vector to ensure:
+        - All values are powers of two (or zero)
+        - The total equals max_slots
+        - Prefer fewer high values over many small ones
+        """
+        # Convert to powers of two
+        kernel_counts = self.convert_to_power_of_two(kernel_counts)
+        total = int(np.sum(kernel_counts))
+
+        while total > max_slots:
+            # Reduce the smallest non-zero element
+            idx = np.argmin(np.where(kernel_counts > 0, kernel_counts, np.inf))
+            new_val = kernel_counts[idx] // 2
+            delta = kernel_counts[idx] - new_val
+            kernel_counts[idx] = new_val
+            total -= delta
+
         return kernel_counts.astype(int)
 
     def build_candidate_schedule(self, base_schedule: np.ndarray, kernel_indices: list, slot_counts: list) -> np.ndarray:
@@ -156,6 +189,11 @@ class CrowSearchAlgorithm:
         self.history_positions = history
 
     def plot_crow_no_running_kernels(self, crow_id):
+
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        from matplotlib import gridspec
+
         """
         Plot heatmap of kernel assignments and fitness evolution for a specific crow. (No running kernels)
 
@@ -546,6 +584,9 @@ class CrowSearchAlgorithm:
         self.history_positions = history_positions
         self.history_fitness = history_fitness
 
+        # print(f"Best Position: {self.best_position}")
+        # input("Press Enter to continue.............................................................")
+
         return self.best_position
 
     def _build_cached_predictor(self):
@@ -558,7 +599,7 @@ class CrowSearchAlgorithm:
         model = self.models[-1]
 
         # Define the cached prediction function
-        @lru_cache(maxsize=100000)
+        @lru_cache(maxsize=1024*10)
         def predict(frozen_features):
             """
             Cache the predicted time for a given set of features.
@@ -568,10 +609,25 @@ class CrowSearchAlgorithm:
 
         return predict
 
+    def quantize_cpu(self,value):
+
+        REP_VALUES = [16.66, 49.99, 83.33]
+
+        idx = int(value // 33.33)
+        idx = min(idx, 2)
+
+        return REP_VALUES[idx]
+
     def predict_time(self, features):
         """
         Predict the execution time using the cached predictor.
         """
+
+        # Quantize CPU usage
+        features["user"] = self.quantize_cpu(features["user"])
+        features["kernel"] = self.quantize_cpu(features["kernel"])
+        features["idle"] = self.quantize_cpu(features["idle"])
+
         # Check if the cached predictor is built
         frozen = frozendict(features)
 
@@ -640,7 +696,6 @@ class CrowSearchAlgorithm:
             interaction_on_running_kernels.append(relative_difference)
         """
 
-
         #
         # Evaluate impact of new scheduling candidate in schedulable kernels
         #
@@ -677,25 +732,54 @@ class CrowSearchAlgorithm:
             relative_difference = (candidate_configuration_predicted_time - alone_predicted_time) / alone_predicted_time
 
             # TODO: introduce a factor to penalize no parallelism (divide by cus?)
-            gain.append((schedulable_kernels[kernel_idx] / self.num_kernels) * (1 / candidate_configuration_predicted_time))
+            # gain.append((schedulable_kernels[kernel_idx] / self.num_kernels) * (1 / candidate_configuration_predicted_time))
 
             # Accumulate the interaction of each kernel in the running queue
             interaction_on_schedulable_kernels.append(relative_difference)
 
+        # Diversity penalty and replica reward
+        # num_kernels_used = np.count_nonzero(schedulable_candidate)
+        # diversity_penalty = num_kernels_used / self.num_slots # [0,1]
+        # total_replicas = schedulable_candidate.sum()
+        # avg_replicas = total_replicas / num_kernels_used if num_kernels_used > 0 else 0
+        # replica_reward = avg_replicas / self.num_slots # [0,1]
+
+        num_kernels_used = np.count_nonzero(schedulable_kernels)
+        diversity_penalty = num_kernels_used / self.num_slots # [0,1]
+        total_replicas = schedulable_kernels.sum()
+        avg_replicas = total_replicas / num_kernels_used if num_kernels_used > 0 else 0
+        replica_reward = avg_replicas / self.num_slots # [0,1]
+
+        gain_fitness = replica_reward - diversity_penalty
+        gain_norm = gain_fitness
+
+        # print(f"Schedulable Candidate: {schedulable_candidate}")
+        # print(f"Number of Kernels Used: {num_kernels_used}")
+        # print(f"Total Replicas: {total_replicas}")
+        # print(f"Average Replicas: {avg_replicas}")
+        # print(f"Diversity Penalty: {diversity_penalty}")
+        # print(f"Replica Reward: {replica_reward}")
+        # print(f"Gain Fitness: {gain_fitness}")
+
         # Calculate partial fitness values
         running_kernel_fitness = np.mean(interaction_on_running_kernels) if len(interaction_on_running_kernels) > 0 else 0
         schedulable_kernel_fitness = np.mean(interaction_on_schedulable_kernels) if len(interaction_on_schedulable_kernels) > 0 else 0
-        gain_fitness = np.mean(gain) if len(gain) > 0 else 0
+        # gain_fitness = np.mean(gain) if len(gain) > 0 else 0
         fairness_penarlty = np.std(schedulable_kernels)
 
         # Normalize the fitness values
         running_kernel_norm = np.clip(running_kernel_fitness, 0, 1.0) # / 1.0
         schedulable_kernel_norm = np.clip(schedulable_kernel_fitness, 0, 2.0) / 2.0
-        gain_norm = np.clip(gain_fitness, 0, 0.5) / 0.5
+        # gain_norm = np.clip(gain_fitness, 0, 0.5) / 0.5
         fairness_penarlty_norm = np.clip(fairness_penarlty, 0, 2.3) / 2.3
 
         # Calculate penalties
-        interaction_penalty = running_kernel_norm + schedulable_kernel_norm - 0.5 * gain_norm
+        interaction_penalty = running_kernel_norm + schedulable_kernel_norm - gain_norm
+
+        # print(f"Running Kernel Norm: {running_kernel_norm}")
+        # print(f"Schedulable Kernel Norm: {schedulable_kernel_norm}")
+        # print(f"Gain Norm: {gain_norm}")
+        # print(f"Interaction Penalty: {interaction_penalty}")
 
         alpha = 1
 
@@ -711,6 +795,8 @@ class CrowSearchAlgorithm:
         # print(f"Alpha: {alpha}")
         # print(f"Fitness: {fitness}")
 
+        # input("Press Enter to continue.............................................................")
+
         return fitness
 
     def plot_crow(self, running_kernels: np.ndarray, schedulable_kernels: list, crow_id):
@@ -720,6 +806,11 @@ class CrowSearchAlgorithm:
         Args:
             crow_id (int): ID of the crow to plot.
         """
+
+        import matplotlib.pyplot as plt
+        import seaborn as sns
+        from matplotlib import gridspec
+
         if self.history_positions is None or self.history_fitness is None:
             raise ValueError("No history found. Run the algorithm first.")
 
@@ -744,34 +835,46 @@ class CrowSearchAlgorithm:
         best_iter = int(np.argmin(fitness))
 
         # Set up grid with 3 rows: colorbar, heatmap, and fitness line plot
-        fig = plt.figure(figsize=(14, 6))
-        spec = gridspec.GridSpec(nrows=3, ncols=2, height_ratios=[0.15, 3, 1], width_ratios=[0.96, 0.04], hspace=0.3)
+        fig = plt.figure(figsize=(8, 5))
+        spec = gridspec.GridSpec(nrows=3, ncols=1, height_ratios=[0.1, 3, 1])
 
         cbar_ax = fig.add_subplot(spec[0, 0]) # Colorbar axis
         ax1 = fig.add_subplot(spec[1, 0])   # Heatmap axis
         ax2 = fig.add_subplot(spec[2, 0], sharex=ax1)   # Fitness plot axis
 
         # --- Heatmap of kernel allocation ---
-        sns.heatmap(
+        ax_hm = sns.heatmap(
             crow_data,
             ax=ax1,
             annot=True,
             fmt="d",
             cmap="YlGnBu",
             cbar_ax=cbar_ax,
-            cbar_kws={"orientation": "horizontal", "label": "Slots Used"},
-            xticklabels=np.arange(num_iters),
+            cbar_kws={"orientation": "horizontal", "label": "# Slots Used", "location": "top"},
+            xticklabels=np.arange(num_iters, dtype=int),
             yticklabels=self.kernel_names
         )
+        # Set font size of the colorbar label
+        cbar = ax_hm.collections[0].colorbar
+        cbar.set_label("# Slots Used", fontsize=14)  # Set desired fontsize
+        ticks = np.arange(num_slots+1, dtype=int)
+        cbar.set_ticks(ticks = ticks, labels = [str(x) for x in ticks], fontsize=12)  # Set desired fontsize for ticks
+
         ax1.axvline(x=best_iter, color='red', linestyle='--', lw=2)
-        ax1.set_ylabel("Kernel Type")
-        ax1.set_title(f"Crow #{crow_id} - Kernel Assignment and Fitness Over Time")
+        ticks = np.arange(stop=num_iters, step=10, dtype=int)
+        # ax1.set_xticks(ticks
+        # , [str(x) for x in ticks], rotation=0, fontsize=12)
+        ax1.tick_params(axis='x', which='both', bottom=False, labelbottom=False)
+        # ax1.set_ylabel("Task")
+        # ax1.set_title(f"Crow #{crow_id} - Kernel Assignment and Fitness Over Time")
 
         # --- Line plot of fitness ---
         ax2.plot(np.arange(num_iters), fitness, marker='o', color='black', label="Fitness")
         ax2.axvline(x=best_iter, color='red', linestyle='--', lw=2, label=f"Best Iter ({best_iter})")
-        ax2.set_ylabel("Fitness")
-        ax2.set_xlabel("Iteration")
+        ax2.set_ylabel("Fitness", fontsize=14)
+        ax2.set_xlabel("Iteration", fontsize=14)
+        ax2.set_xticks(ticks, [str(x) for x in ticks], fontsize=12)
+        # ax2.set_xticklabels([str(x) for x in ticks])
         ax2.grid(True)
         ax2.legend()
 
@@ -850,7 +953,7 @@ if __name__ == "__main__":
 
     num_kernels = 11
     num_slots = 8
-    scheduler = CrowSearchAlgorithm(num_kernels, num_slots, obj_func=None, kernel_names=["aes", "bulk", "crs", "kmp", "knn", "merge", "nw", "queue", "stencil2d", "stencil3d", "strided"], models=online_models_list)
+    scheduler = CrowSearchAlgorithm(num_kernels, num_slots, obj_func=None, kernel_names=["AES", "BULK", "CRS", "KMP", "KNN", "MERGE", "NW", "QUEUE", "STENCIL2D", "STENCIL3D", "STRIDED"], models=online_models_list)
 
     # No running kernels example
     # scheduler.run_no_running_kernels(n_crows=40, max_iter=100, awareness_prob=0.4, flight_length=1.5)
@@ -864,12 +967,13 @@ if __name__ == "__main__":
     #                    schedulable_kernels=schedulable_kernels)
     # scheduler.plot_crow(running_kernels=running_kernels, schedulable_kernels=schedulable_kernels, crow_id=scheduler.best_crow_idx)
 
+    # DSD AP0.1 y 0,9
     running_kernels = np.zeros(num_kernels, dtype=int)
-    running_kernels[[1,4]] = 1
-    schedulable_kernels=[5,7,8,9,10]
+    schedulable_kernels=[2,5,8]
 
     for i in range(2):
-        scheduler.run_standalone(n_crows=20, max_iter=100, awareness_prob=0.2, flight_length=1.5,
+        # scheduler.run_standalone(n_crows=4, max_iter=40, awareness_prob=.1, flight_length=4.5,
+        scheduler.run_standalone(n_crows=4, max_iter=40, awareness_prob=.1, flight_length=4.5,
                                 running_kernels=running_kernels,
                                 schedulable_kernels=schedulable_kernels,
                                 cpu_usage={"user":40, "kernel":20, "idle":40})
@@ -879,3 +983,4 @@ if __name__ == "__main__":
         print("Best Score:", scheduler.best_score)
         print("Best Crow:", scheduler.best_crow_idx)
         print("Best Iteration Data: (crow_idx, iteration)", scheduler.get_best_iteration_data())
+        print("Cached Predictor Info:", scheduler._cached_predict.cache_info())
