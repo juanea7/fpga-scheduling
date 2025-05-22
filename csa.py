@@ -45,7 +45,7 @@ class CrowSearchAlgorithm:
         # Cached predictor
         self._cached_predict = self._build_cached_predictor()
 
-    def normalize_to_slot_sum(self, kernel_counts, max_slots):
+    def normalize_to_slot_sum_old(self, kernel_counts, max_slots):
         """
         Normalize a kernel count vector to ensure:
         - Non-negative integers
@@ -79,7 +79,7 @@ class CrowSearchAlgorithm:
         return np.array(nearest_powers_of_two)
 
 
-    def normalize_to_power_of_two(self, kernel_counts, max_slots):
+    def normalize_to_slot_sum(self, kernel_counts, max_slots):
         """
         Normalize a kernel count vector to ensure:
         - All values are powers of two (or zero)
@@ -89,7 +89,6 @@ class CrowSearchAlgorithm:
         # Convert to powers of two
         kernel_counts = self.convert_to_power_of_two(kernel_counts)
         total = int(np.sum(kernel_counts))
-
         while total > max_slots:
             # Reduce the smallest non-zero element
             idx = np.argmin(np.where(kernel_counts > 0, kernel_counts, np.inf))
@@ -612,6 +611,10 @@ class CrowSearchAlgorithm:
     def quantize_cpu(self,value):
 
         REP_VALUES = [16.66, 49.99, 83.33]
+
+        # Ensure the value is non a NaN
+        if np.isnan(value):
+            return 0  # or some default bucket
 
         idx = int(value // 33.33)
         idx = min(idx, 2)
